@@ -179,9 +179,12 @@ impl Metric {
     }
 
     pub fn from_measurement(key: Key, measurement: Measurement) -> Self {
-        let value = match measurement {
-            Measurement::Counter(v) => MetricValue::Counter { value: v as f64 },
-            Measurement::Gauge(v) => MetricValue::Gauge { value: v as f64 },
+        let (value, kind) = match measurement {
+            Measurement::Counter(v) => (
+                MetricValue::Counter { value: v as f64 },
+                MetricKind::Incremental,
+            ),
+            Measurement::Gauge(v) => (MetricValue::Gauge { value: v as f64 }, MetricKind::Absolute),
             Measurement::Histogram(packed) => {
                 let values = packed
                     .decompress()
@@ -189,11 +192,14 @@ impl Metric {
                     .map(|i| i as f64)
                     .collect::<Vec<_>>();
                 let sample_rates = vec![1; values.len()];
-                MetricValue::Distribution {
-                    values,
-                    sample_rates,
-                    statistic: StatisticKind::Histogram,
-                }
+                (
+                    MetricValue::Distribution {
+                        values,
+                        sample_rates,
+                        statistic: StatisticKind::Histogram,
+                    },
+                    MetricKind::Incremental,
+                )
             }
         };
 
@@ -210,7 +216,7 @@ impl Metric {
             } else {
                 Some(labels)
             },
-            kind: MetricKind::Absolute,
+            kind,
             value,
         }
     }

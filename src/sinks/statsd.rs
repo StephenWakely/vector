@@ -181,7 +181,9 @@ fn encode_event(event: Event, namespace: &str) -> Option<Vec<u8>> {
                     };
                 }
             }
-            _ => {}
+            _ => {
+                warn!("invalid metric sent to statsd sink ({:?}) ({:?})", metric.kind, metric.value);
+            }
         },
         MetricKind::Absolute => {
             if let MetricValue::Gauge { value } = &metric.value {
@@ -190,6 +192,8 @@ fn encode_event(event: Event, namespace: &str) -> Option<Vec<u8>> {
                 if let Some(t) = &metric.tags {
                     buf.push(format!("#{}", encode_tags(t)));
                 };
+            } else {
+                warn!("invalid metric sent to statsd sink ({:?}) ({:?})", metric.kind, metric.value);
             };
         }
     }
