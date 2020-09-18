@@ -5,6 +5,29 @@ use crate::{
     types::Conversion,
 };
 use bytes::Bytes;
+use regex::Regex;
+
+/// Utility function to take a Value, presumably a parameter passed to a remap function
+/// and if it is a Bytes return a unicode string.
+/// Errors if the value is not Bytes or valid unicode.
+///
+/// function and parameter parameters are used for labels in the returned error message.
+fn get_utf8_parameter<'a>(function: &str, parameter: &str, value: &'a Value) -> Result<&'a str> {
+    match value {
+        Value::Bytes(ref bytes) => std::str::from_utf8(bytes).map_err(|_| {
+            format!(
+                "\"{}\" parameter to \"{}\" is not a valid unicode string",
+                parameter, function,
+            )
+        }),
+        _ => Err(format!(
+            "\"{}\" parameter to \"{}\" is not a string type",
+            parameter, function
+        )),
+    }
+}
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub(in crate::mapping) struct NotFn {
@@ -602,6 +625,70 @@ impl Function for FlattenFn {
             ))
         } else {
             Err("unable to apply \"flatten\" to non-array types".to_string())
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+
+/// Because the Regex object doesn't contain a global flag
+/// (this is determined by calling either replace or replace_all)
+/// we need to wrap the object and store this flag when we parse it.
+#[derive(Debug)]
+pub(in crate::mapping) struct RemapRegex {
+    pub regex: Regex,
+    pub global: bool,
+}
+
+#[derive(Debug)]
+pub(in crate::mapping) enum ReplaceParam {
+    Path(Box<dyn Function>),
+    Regex(RemapRegex),
+}
+
+#[derive(Debug)]
+pub(in crate::mapping) struct ReplaceFn {
+    string: Box<dyn Function>,
+    replace: ReplaceParam,
+    with: Box<dyn Function>,
+}
+
+impl ReplaceFn {
+    pub(in crate::mapping) fn new(
+        string: Box<dyn Function>,
+        replace: ReplaceParam,
+        with: Box<dyn Function>,
+    ) -> Self {
+        ReplaceFn {
+            string,
+            replace,
+            with,
+        }
+    }
+}
+
+impl Function for ReplaceFn {
+    fn execute(&self, ctx: &Event) -> Result<Value> {
+        let string = self.string.execute(ctx)?;
+        let string = get_utf8_parameter("replace", "string", &string)?;
+        let with = self.with.execute(ctx)?;
+        let with = get_utf8_parameter("replace", "with", &with)?;
+
+        match &self.replace {
+            ReplaceParam::Path(path) => {
+                let replace = path.execute(ctx)?;
+                let replace = get_utf8_parameter("replace", "replace", &replace)?;
+                Ok(Value::Bytes(string.replace(replace, with).into()))
+            }
+            ReplaceParam::Regex(regex) => {
+                let replaced = if regex.global {
+                    regex.regex.replace_all(string, with)
+                } else {
+                    regex.regex.replace(string, with)
+                };
+                
+                Ok(Value::Bytes(replaced.into_owned().into()))
+            }
         }
     }
 }
@@ -1438,6 +1525,86 @@ mod tests {
                 ])),
                 FlattenFn::new(Box::new(Path::from(vec![vec!["foo"]]))),
             ),
+        ];
+
+        for (input_event, exp, query) in cases {
+            assert_eq!(query.execute(&input_event), exp);
+        }
+    }
+
+    #[test]
+    fn check_replace() {
+        let cases = vec![
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("I like apples and bananas"));
+                    event
+                },
+                Ok(Value::from("I like opples ond bononos")),
+                ReplaceFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Path(Box::new(Literal::from(Value::from("a")))),
+                    Box::new(Literal::from(Value::from("o"))),
+                ),
+            ),
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("I like apples and bananas"));
+                    event
+                },
+                Ok(Value::from("I like opples and bananas")),
+                ReplaceFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Regex(RemapRegex {
+                        regex: Regex::new("a").unwrap(),
+                        global: false,
+                    }),
+                    Box::new(Literal::from(Value::from("o"))),
+                ),
+            ),
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("I like apples and bananas"));
+                    event
+                },
+                Ok(Value::from("I like opples ond bononos")),
+                ReplaceFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Regex(RemapRegex {
+                        regex: Regex::new("a").unwrap(),
+                        global: true,
+                    }),
+                    Box::new(Literal::from(Value::from("o"))),
+                ),
+            ),
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("I like [apples] and bananas"));
+                    event
+                },
+                Ok(Value::from("I like biscuits and bananas")),
+                ReplaceFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Regex(RemapRegex {
+                        regex: Regex::new("\\[apples\\]").unwrap(),
+                        global: true,
+                    }),
+                    Box::new(Literal::from(Value::from("biscuits"))),
+                ),
+            ),
+ 
         ];
 
         for (input_event, exp, query) in cases {

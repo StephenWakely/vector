@@ -64,7 +64,8 @@ query_function = {
     strip_whitespace |
     truncate |
     parse_json |
-    flatten
+    flatten |
+    replace
 }
 
 to_string = { "to_string(" ~ query_arithmetic ~ ("," ~ (string | null) )? ~ ")"}
@@ -83,6 +84,7 @@ strip_whitespace = { "strip_whitespace(" ~ query_arithmetic ~ ")"}
 truncate = { "truncate(" ~ query_arithmetic ~ "," ~ query_arithmetic ~ ("," ~ boolean)? ~ ")" }
 parse_json = { "parse_json(" ~ query_arithmetic ~ ")" }
 flatten = { "flatten(" ~ query_arithmetic ~ ")" }
+replace = { "replace(" ~ query_arithmetic ~ "," ~ (query_arithmetic | regex) ~ "," ~ query_arithmetic ~ ")" }
 
 group = { "(" ~ query_arithmetic ~ ")" }
 
@@ -101,6 +103,14 @@ char = {
     // | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
     // | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
+
+regex = ${ "/" ~ inner_regex_string ~ "/" ~ regex_flags }
+inner_regex_string = @{ regex_char* }
+regex_char = {
+    !("/" | "\\") ~ ANY 
+    | "\\" ~ ANY
+}
+regex_flags = @{ ("i" | "g" | "m")* }
 
 number = @{
     "-"?

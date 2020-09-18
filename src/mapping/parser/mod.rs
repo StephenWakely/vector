@@ -8,9 +8,9 @@ use crate::{
             arithmetic::Arithmetic,
             arithmetic::Operator,
             functions::{
-                DowncaseFn, FlattenFn, Md5Fn, NotFn, NowFn, ParseJsonFn, ParseTimestampFn, Sha1Fn,
-                StripWhitespaceFn, ToBooleanFn, ToFloatFn, ToIntegerFn, ToStringFn, ToTimestampFn,
-                TruncateFn, UpcaseFn, UuidV4Fn,
+                DowncaseFn, FlattenFn, Md5Fn, NotFn, NowFn, ParseJsonFn, ParseTimestampFn,
+                RemapRegex, ReplaceFn, ReplaceParam, Sha1Fn, StripWhitespaceFn, ToBooleanFn,
+                ToFloatFn, ToIntegerFn, ToStringFn, ToTimestampFn, TruncateFn, UpcaseFn, UuidV4Fn,
             },
             path::Path as QueryPath,
             Literal,
@@ -23,6 +23,7 @@ use pest::{
     iterators::{Pair, Pairs},
     Parser,
 };
+use regex::RegexBuilder;
 
 static TOKEN_ERR: &str = "unexpected token sequence";
 
@@ -346,8 +347,55 @@ fn query_function_from_pair(pair: Pair<Rule>) -> Result<Box<dyn query::Function>
             let query = query_arithmetic_from_pair(param)?;
             Ok(Box::new(FlattenFn::new(query)))
         }
+        Rule::replace => {
+            let (first, mut other) = split_inner_rules_from_pair(pair)?;
+            let string = query_arithmetic_from_pair(first)?;
+            let replace =
+                other
+                    .next()
+                    .ok_or(TOKEN_ERR.into())
+                    .and_then(|pair| match pair.as_rule() {
+                        Rule::regex => regex_from_pair(pair).map(ReplaceParam::Regex),
+                        _ => query_arithmetic_from_pair(pair).map(ReplaceParam::Path),
+                    })?;
+
+            let with = query_arithmetic_from_pair(other.next().ok_or(TOKEN_ERR)?)?;
+            Ok(Box::new(ReplaceFn::new(string, replace, with)))
+        }
 
         _ => unreachable!("parser should not allow other query_function child rules here"),
+    }
+}
+
+fn regex_from_pair(pair: Pair<Rule>) -> Result<RemapRegex> {
+    match pair.as_rule() {
+        Rule::regex => {
+            let mut inner = pair.into_inner();
+            let regex = inner.next().ok_or(TOKEN_ERR.to_string())?;
+            let flags = inner.next().map(|flags| flags.as_str()).unwrap_or("");
+
+            let mut global = false;
+            let mut insensitive = false;
+            let mut multi_line = false;
+            for flag in flags.chars() {
+                if flag == 'i' {
+                    insensitive = true;
+                } else if flag == 'g' {
+                    global = true;
+                } else if flag == 'm' {
+                    multi_line = true;
+                }
+                // Invalid flags shouldn't get picked up by the parser.
+            }
+
+            RegexBuilder::new(&regex.as_str().replace("\\/", "/"))
+                .case_insensitive(insensitive)
+                .multi_line(multi_line)
+                .build()
+                .map(|regex| RemapRegex { regex, global })
+                .map_err(|err| format!("invalid regex {}", err))
+        }
+        _ => Err(TOKEN_ERR.to_string()),
     }
 }
 
@@ -1112,6 +1160,79 @@ mod tests {
                     "bar".into(),
                     Box::new(QueryPath::from("baz")),
                     Some(Box::new(Literal::from(Value::Boolean(true)))),
+                ))]),
+            ),
+            (
+                ".foo = replace(.bar, \"a\", \"b\")",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(ReplaceFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Path(Box::new(Literal::from(Value::from("a")))),
+                        Box::new(Literal::from(Value::from("b"))),
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = replace(.bar, /a/, \"b\")",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(ReplaceFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            regex: RegexBuilder::new("a".into()).build().unwrap(),
+                            global: false,
+                        }),
+                        Box::new(Literal::from(Value::from("b"))),
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = replace(.bar, /a\\/g/, \"b\")",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(ReplaceFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            regex: RegexBuilder::new("a/g".into()).build().unwrap(),
+                            global: false,
+                        }),
+                        Box::new(Literal::from(Value::from("b"))),
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = replace(.bar, /a\\[ting\\]g/, \"b\")",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(ReplaceFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            regex: RegexBuilder::new("a\\[ting\\]g".into()).build().unwrap(),
+                            global: false,
+                        }),
+                        Box::new(Literal::from(Value::from("b"))),
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = replace(.bar, /ab/gi, \"b\")",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(ReplaceFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            // Unfortunately the flags passed into regex are not picked up
+                            // by the debug output, so this will pass even if we haven't
+                            // parsed the case_insensitive flag correctly.
+                            regex: RegexBuilder::new("ab".into())
+                                .case_insensitive(true)
+                                .build()
+                                .unwrap(),
+                            global: true,
+                        }),
+                        Box::new(Literal::from(Value::from("b"))),
+                    )),
                 ))]),
             ),
         ];
