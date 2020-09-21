@@ -65,7 +65,8 @@ query_function = {
     truncate |
     parse_json |
     flatten |
-    replace
+    replace |
+    split
 }
 
 to_string = { "to_string(" ~ query_arithmetic ~ ("," ~ (string | null) )? ~ ")"}
@@ -85,6 +86,7 @@ truncate = { "truncate(" ~ query_arithmetic ~ "," ~ query_arithmetic ~ ("," ~ bo
 parse_json = { "parse_json(" ~ query_arithmetic ~ ")" }
 flatten = { "flatten(" ~ query_arithmetic ~ ")" }
 replace = { "replace(" ~ query_arithmetic ~ "," ~ (query_arithmetic | regex) ~ "," ~ query_arithmetic ~ ")" }
+split = { "split(" ~ query_arithmetic ~ "," ~ (query_arithmetic | regex) ~ ("," ~ query_arithmetic)? ~ ")" }
 
 group = { "(" ~ query_arithmetic ~ ")" }
 
@@ -107,7 +109,7 @@ char = {
 regex = ${ "/" ~ inner_regex_string ~ "/" ~ regex_flags }
 inner_regex_string = @{ regex_char* }
 regex_char = {
-    !("/" | "\\") ~ ANY 
+    !("/" | "\\") ~ ANY
     | "\\" ~ ANY
 }
 regex_flags = @{ ("i" | "g" | "m")* }

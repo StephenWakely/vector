@@ -490,7 +490,7 @@ impl Function for TruncateFn {
         if let Value::Bytes(bytes) = value {
             let limit = match self.limit.execute(ctx)? {
                 // If the result of execution is a float, we take the floor as our limit.
-                Value::Float(f) => f.floor() as usize,
+                Value::Float(f) if f >= 0.0 => f.floor() as usize,
                 Value::Integer(i) if i >= 0 => i as usize,
                 _ => return Err("limit is not a positive number".into()),
             };
@@ -648,19 +648,19 @@ pub(in crate::mapping) enum ReplaceParam {
 
 #[derive(Debug)]
 pub(in crate::mapping) struct ReplaceFn {
-    string: Box<dyn Function>,
+    path: Box<dyn Function>,
     replace: ReplaceParam,
     with: Box<dyn Function>,
 }
 
 impl ReplaceFn {
     pub(in crate::mapping) fn new(
-        string: Box<dyn Function>,
+        path: Box<dyn Function>,
         replace: ReplaceParam,
         with: Box<dyn Function>,
     ) -> Self {
         ReplaceFn {
-            string,
+            path,
             replace,
             with,
         }
@@ -669,8 +669,8 @@ impl ReplaceFn {
 
 impl Function for ReplaceFn {
     fn execute(&self, ctx: &Event) -> Result<Value> {
-        let string = self.string.execute(ctx)?;
-        let string = get_utf8_parameter("replace", "string", &string)?;
+        let string = self.path.execute(ctx)?;
+        let string = get_utf8_parameter("replace", "path", &string)?;
         let with = self.with.execute(ctx)?;
         let with = get_utf8_parameter("replace", "with", &with)?;
 
@@ -686,8 +686,82 @@ impl Function for ReplaceFn {
                 } else {
                     regex.regex.replace(string, with)
                 };
-                
+
                 Ok(Value::Bytes(replaced.into_owned().into()))
+            }
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(in crate::mapping) struct SplitFn {
+    path: Box<dyn Function>,
+    pattern: ReplaceParam,
+    limit: Option<Box<dyn Function>>,
+}
+
+impl SplitFn {
+    pub(in crate::mapping) fn new(
+        path: Box<dyn Function>,
+        pattern: ReplaceParam,
+        limit: Option<Box<dyn Function>>,
+    ) -> Self {
+        SplitFn {
+            path,
+            pattern,
+            limit,
+        }
+    }
+}
+
+impl Function for SplitFn {
+    fn execute(&self, ctx: &Event) -> Result<Value> {
+        let path = self.path.execute(ctx)?;
+        let string = get_utf8_parameter("split", "path", &path)?;
+
+        let limit = match &self.limit {
+            None => None,
+            Some(ref limit) => {
+                let limit = limit.execute(ctx);
+
+                match limit {
+                    Ok(Value::Integer(num)) if num > 0 => Some(num as usize),
+                    Ok(Value::Float(num)) if num > 0.0 => Some(num.floor() as usize),
+                    Ok(_) => return Err("limit is not a positive number".into()),
+                    Err(err) => return Err(err),
+                }
+            }
+        };
+
+        match &self.pattern {
+            ReplaceParam::Path(path) => {
+                let pattern = path.execute(ctx)?;
+                let pattern = get_utf8_parameter("split", "pattern", &pattern)?;
+
+                let iter: Box<dyn Iterator<Item = _>> = match limit {
+                    Some(limit) => Box::new(string.splitn(limit, pattern)),
+                    None => Box::new(string.split(pattern)),
+                };
+
+                Ok(Value::Array(
+                    iter.map(|sub| Value::Bytes(sub.to_string().into()))
+                        .collect(),
+                ))
+            }
+            ReplaceParam::Regex(regex) => {
+                // The global flag has no meaning here.
+                // Should we error or just ignore?
+                let iter: Box<dyn Iterator<Item = _>> = match &limit {
+                    Some(ref limit) => Box::new(regex.regex.splitn(string, *limit)),
+                    None => Box::new(regex.regex.split(string)),
+                };
+
+                Ok(Value::Array(
+                    iter.map(|sub| Value::Bytes(sub.to_string().into()))
+                        .collect(),
+                ))
             }
         }
     }
@@ -1604,7 +1678,71 @@ mod tests {
                     Box::new(Literal::from(Value::from("biscuits"))),
                 ),
             ),
- 
+        ];
+
+        for (input_event, exp, query) in cases {
+            assert_eq!(query.execute(&input_event), exp);
+        }
+    }
+
+    #[test]
+    fn check_split() {
+        let cases = vec![
+            (
+                {
+                    let mut event = Event::from("");
+                    event.as_mut_log().insert("foo", Value::from(""));
+                    event
+                },
+                Ok(Value::from(vec![Value::from("")])),
+                SplitFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Path(Box::new(Literal::from(Value::from(" ")))),
+                    None,
+                ),
+            ),
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("This is a long string."));
+                    event
+                },
+                Ok(Value::from(vec![
+                    Value::from("This"),
+                    Value::from("is"),
+                    Value::from("a"),
+                    Value::from("long"),
+                    Value::from("string."),
+                ])),
+                SplitFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Path(Box::new(Literal::from(Value::from(" ")))),
+                    None,
+                ),
+            ),
+            (
+                {
+                    let mut event = Event::from("");
+                    event
+                        .as_mut_log()
+                        .insert("foo", Value::from("This is a long string."));
+                    event
+                },
+                Ok(Value::from(vec![
+                    Value::from("This"),
+                    Value::from("is a long string."),
+                ])),
+                SplitFn::new(
+                    Box::new(Path::from(vec![vec!["foo"]])),
+                    ReplaceParam::Regex(RemapRegex {
+                        regex: Regex::new(" ").unwrap(),
+                        global: true,
+                    }),
+                    Some(Box::new(Literal::from(Value::from(2)))),
+                ),
+            ),
         ];
 
         for (input_event, exp, query) in cases {

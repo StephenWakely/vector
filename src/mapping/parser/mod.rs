@@ -9,8 +9,9 @@ use crate::{
             arithmetic::Operator,
             functions::{
                 DowncaseFn, FlattenFn, Md5Fn, NotFn, NowFn, ParseJsonFn, ParseTimestampFn,
-                RemapRegex, ReplaceFn, ReplaceParam, Sha1Fn, StripWhitespaceFn, ToBooleanFn,
-                ToFloatFn, ToIntegerFn, ToStringFn, ToTimestampFn, TruncateFn, UpcaseFn, UuidV4Fn,
+                RemapRegex, ReplaceFn, ReplaceParam, Sha1Fn, SplitFn, StripWhitespaceFn,
+                ToBooleanFn, ToFloatFn, ToIntegerFn, ToStringFn, ToTimestampFn, TruncateFn,
+                UpcaseFn, UuidV4Fn,
             },
             path::Path as QueryPath,
             Literal,
@@ -350,17 +351,30 @@ fn query_function_from_pair(pair: Pair<Rule>) -> Result<Box<dyn query::Function>
         Rule::replace => {
             let (first, mut other) = split_inner_rules_from_pair(pair)?;
             let string = query_arithmetic_from_pair(first)?;
-            let replace =
-                other
-                    .next()
-                    .ok_or(TOKEN_ERR.into())
-                    .and_then(|pair| match pair.as_rule() {
-                        Rule::regex => regex_from_pair(pair).map(ReplaceParam::Regex),
-                        _ => query_arithmetic_from_pair(pair).map(ReplaceParam::Path),
-                    })?;
+            let pair = other.next().ok_or(TOKEN_ERR)?;
+            let replace = match pair.as_rule() {
+                Rule::regex => regex_from_pair(pair).map(ReplaceParam::Regex),
+                _ => query_arithmetic_from_pair(pair).map(ReplaceParam::Path),
+            }?;
 
             let with = query_arithmetic_from_pair(other.next().ok_or(TOKEN_ERR)?)?;
             Ok(Box::new(ReplaceFn::new(string, replace, with)))
+        }
+        Rule::split => {
+            let (first, mut other) = split_inner_rules_from_pair(pair)?;
+            let path = query_arithmetic_from_pair(first)?;
+            let pair = other.next().ok_or(TOKEN_ERR)?;
+            let pattern = match pair.as_rule() {
+                Rule::regex => regex_from_pair(pair).map(ReplaceParam::Regex),
+                _ => query_arithmetic_from_pair(pair).map(ReplaceParam::Path),
+            }?;
+
+            let limit = match other.next() {
+                None => None,
+                Some(pair) => Some(query_arithmetic_from_pair(pair)?),
+            };
+
+            Ok(Box::new(SplitFn::new(path, pattern, limit)))
         }
 
         _ => unreachable!("parser should not allow other query_function child rules here"),
@@ -371,7 +385,7 @@ fn regex_from_pair(pair: Pair<Rule>) -> Result<RemapRegex> {
     match pair.as_rule() {
         Rule::regex => {
             let mut inner = pair.into_inner();
-            let regex = inner.next().ok_or(TOKEN_ERR.to_string())?;
+            let regex = inner.next().ok_or(TOKEN_ERR)?;
             let flags = inner.next().map(|flags| flags.as_str()).unwrap_or("");
 
             let mut global = false;
@@ -395,7 +409,7 @@ fn regex_from_pair(pair: Pair<Rule>) -> Result<RemapRegex> {
                 .map(|regex| RemapRegex { regex, global })
                 .map_err(|err| format!("invalid regex {}", err))
         }
-        _ => Err(TOKEN_ERR.to_string()),
+        _ => Err(TOKEN_ERR.into()),
     }
 }
 
@@ -1180,7 +1194,7 @@ mod tests {
                     Box::new(ReplaceFn::new(
                         Box::new(QueryPath::from("bar")),
                         ReplaceParam::Regex(RemapRegex {
-                            regex: RegexBuilder::new("a".into()).build().unwrap(),
+                            regex: RegexBuilder::new("a").build().unwrap(),
                             global: false,
                         }),
                         Box::new(Literal::from(Value::from("b"))),
@@ -1194,7 +1208,7 @@ mod tests {
                     Box::new(ReplaceFn::new(
                         Box::new(QueryPath::from("bar")),
                         ReplaceParam::Regex(RemapRegex {
-                            regex: RegexBuilder::new("a/g".into()).build().unwrap(),
+                            regex: RegexBuilder::new("a/g").build().unwrap(),
                             global: false,
                         }),
                         Box::new(Literal::from(Value::from("b"))),
@@ -1208,7 +1222,7 @@ mod tests {
                     Box::new(ReplaceFn::new(
                         Box::new(QueryPath::from("bar")),
                         ReplaceParam::Regex(RemapRegex {
-                            regex: RegexBuilder::new("a\\[ting\\]g".into()).build().unwrap(),
+                            regex: RegexBuilder::new("a\\[ting\\]g").build().unwrap(),
                             global: false,
                         }),
                         Box::new(Literal::from(Value::from("b"))),
@@ -1225,13 +1239,47 @@ mod tests {
                             // Unfortunately the flags passed into regex are not picked up
                             // by the debug output, so this will pass even if we haven't
                             // parsed the case_insensitive flag correctly.
-                            regex: RegexBuilder::new("ab".into())
+                            regex: RegexBuilder::new("ab")
                                 .case_insensitive(true)
                                 .build()
                                 .unwrap(),
                             global: true,
                         }),
                         Box::new(Literal::from(Value::from("b"))),
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = split(.bar, /aa/i)",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(SplitFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            regex: RegexBuilder::new("aa")
+                                .case_insensitive(true)
+                                .build()
+                                .unwrap(),
+                            global: false,
+                        }),
+                        None,
+                    )),
+                ))]),
+            ),
+            (
+                ".foo = split(.bar, /aa/i, 2)",
+                Mapping::new(vec![Box::new(Assignment::new(
+                    "foo".to_string(),
+                    Box::new(SplitFn::new(
+                        Box::new(QueryPath::from("bar")),
+                        ReplaceParam::Regex(RemapRegex {
+                            regex: RegexBuilder::new("aa")
+                                .case_insensitive(true)
+                                .build()
+                                .unwrap(),
+                            global: false,
+                        }),
+                        Some(Box::new(Literal::from(Value::from(2.0)))),
                     )),
                 ))]),
             ),
