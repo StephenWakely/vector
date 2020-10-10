@@ -5777,7 +5777,7 @@ dependencies = [
  "rust_decimal",
  "schannel",
  "seahash",
- "security-framework 0.4.4",
+ "security-framework 1.0.0",
  "serde",
  "serde_json",
  "serde_yaml",
