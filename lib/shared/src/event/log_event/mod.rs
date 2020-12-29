@@ -123,10 +123,7 @@ impl LogEvent {
                     None => None,
                 }
             }
-            Segment::Field {
-                name,
-                requires_quoting: _,
-            } => {
+            Segment::Field { name, .. } => {
                 if working_lookup.len() == 0 {
                     // Terminus: We **must** insert here or abort.
                     trace!(field = %name, "Getting from root.");

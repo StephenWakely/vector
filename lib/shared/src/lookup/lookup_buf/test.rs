@@ -211,3 +211,30 @@ fn lookup_to_string_and_serialize() {
             _ => panic!("This test should never read Err'ing test fixtures."),
         });
 }
+
+#[quickcheck]
+fn path_parses(path: LookupBuf) -> bool {
+    let orig = path.to_string();
+    let result = match LookupBuf::from_str(&orig) {
+        Err(err) => {
+            println!("Err: {:?}", err);
+            false
+        }
+        Ok(path) => {
+            let new = path.to_string();
+            if orig == new {
+                true
+            } else {
+                println!("Parsed: {:?}", path);
+                println!("New: {}", new);
+                false
+            }
+        }
+    };
+
+    if !result {
+        println!("Failed: {}", orig);
+    }
+
+    result
+}

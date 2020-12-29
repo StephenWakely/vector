@@ -4699,6 +4699,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickcheck_macros"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "608c156fd8e97febc07dc9c2e2c80bf74cfc6ef26893eae3daf8bc2bc94a4b7f"
+dependencies = [
+ "proc-macro2 1.0.24",
+ "quote 1.0.8",
+ "syn 1.0.55",
+]
+
+[[package]]
 name = "quote"
 version = "0.6.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5097,6 +5108,8 @@ dependencies = [
  "paste",
  "pest",
  "pest_derive",
+ "quickcheck",
+ "quickcheck_macros",
  "regex",
  "serde",
  "thiserror",
@@ -5898,6 +5911,8 @@ dependencies = [
  "nom 6.0.1",
  "pest",
  "pest_derive",
+ "quickcheck",
+ "quickcheck_macros",
  "remap-lang",
  "rlua",
  "serde",

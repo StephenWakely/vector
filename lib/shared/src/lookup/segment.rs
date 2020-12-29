@@ -355,3 +355,4 @@ impl<'a> From<&'a SegmentBuf> for Segment<'a> {
         }
     }
 }
+

@@ -27,6 +27,10 @@ pub use value::Value;
 
 pub use paste::paste;
 
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

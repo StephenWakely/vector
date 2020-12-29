@@ -2,6 +2,8 @@
 
 use crate::{event::*, lookup::*};
 use pest::iterators::Pair;
+#[cfg(test)]
+use quickcheck::{Arbitrary, Gen};
 use remap_lang::parser::ParserRule;
 use std::{
     collections::VecDeque,
@@ -446,5 +448,38 @@ impl<'a> From<Lookup<'a>> for LookupBuf {
             "A LookupBuf with 0 length was turned into a Lookup. Since a LookupBuf with 0 \
                   length is an invariant, any action on it is too.",
         )
+    }
+}
+
+#[cfg(test)]
+impl Arbitrary for LookupBuf {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        LookupBuf {
+            segments: {
+                // Ensure we can't get an empty list.
+                let len = u8::arbitrary(g) + 1;
+                (0..len).map(|_| SegmentBuf::arbitrary(g)).collect()
+            },
+        }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        Box::new(
+            self.segments
+                .shrink()
+                .filter(|segments| segments.len() > 0)
+                .map(|segments| LookupBuf { segments }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indexed_coalesce_from_string() {
+        let parsed = LookupBuf::from_str("(a | b)[2]").unwrap();
+        assert_eq!("(a | b)[2]", parsed.to_string());
     }
 }

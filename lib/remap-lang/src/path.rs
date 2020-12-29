@@ -2,6 +2,9 @@ use crate::{parser::Parser, Error as E};
 use std::fmt;
 use std::str::FromStr;
 
+#[cfg(test)]
+use quickcheck::{Arbitrary, Gen};
+
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum Error {
     #[error("unable to create path from alternative string: {0}")]
@@ -218,6 +221,19 @@ impl fmt::Display for Path {
     }
 }
 
+#[cfg(test)]
+impl Arbitrary for Path {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        Self {
+            segments: Vec::arbitrary(g),
+        }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        Box::new(self.segments.shrink().map(|segments| Self { segments }))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum Segment {
     Field(Field),
@@ -272,6 +288,45 @@ impl Field {
     }
 }
 
+#[cfg(test)]
+impl Arbitrary for Field {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        let chars = (65u8..90).chain(97..122).map(|c| c as char);
+
+        match i32::arbitrary(g) % 2 {
+            0 => Field::Regular({
+                let chars = chars.collect::<Vec<_>>();
+                let len = u32::arbitrary(g) + 5;
+                (0..len)
+                    .map(|_| chars[usize::arbitrary(g) % chars.len()].clone())
+                    .collect::<String>()
+            }),
+            _ => Field::Quoted({
+                let chars = chars.chain(vec!['@', ' ']).collect::<Vec<_>>();
+                let len = u32::arbitrary(g) + 5;
+                (0..len)
+                    .map(|_| chars[usize::arbitrary(g) % chars.len()].clone())
+                    .collect::<String>()
+            }),
+        }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        let s = match self {
+            Field::Regular(s) => s,
+            Field::Quoted(s) => s,
+        };
+
+        Box::new(s.shrink().filter(|s| !s.is_empty()).map(|s| {
+            if s.contains(" ") {
+                Field::Quoted(s)
+            } else {
+                Field::Regular(s)
+            }
+        }))
+    }
+}
+
 impl FromStr for Field {
     type Err = E;
 
@@ -294,6 +349,23 @@ impl fmt::Display for Field {
                 f.write_str(path)?;
                 f.write_str("\"")
             }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Arbitrary for Segment {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        match i32::arbitrary(g) % 3 {
+            1 => Segment::Field(Field::arbitrary(g)),
+            2 => Segment::Coalesce({
+                let mut v = Vec::arbitrary(g);
+                while v.len() < 2 {
+                    v = Vec::arbitrary(g);
+                }
+                v
+            }),
+            _ => Segment::Index(usize::arbitrary(g)),
         }
     }
 }
@@ -441,5 +513,17 @@ mod tests {
                 Field(Regular("foobar".to_owned())),
             ]),
         );
+    }
+
+    #[quickcheck]
+    fn path_parses(path: Path) -> bool {
+        let orig = path.to_string();
+        match Path::from_str(&orig) {
+            Err(_) => false,
+            Ok(path) => {
+                let new = path.to_string();
+                orig == new
+            }
+        }
     }
 }

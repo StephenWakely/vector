@@ -1,4 +1,6 @@
 use crate::lookup::*;
+#[cfg(test)]
+use quickcheck::{Arbitrary, Gen};
 use std::{
     collections::VecDeque,
     fmt::{Display, Formatter},
@@ -151,5 +153,64 @@ impl From<Vec<Vec<SegmentBuf>>> for SegmentBuf {
 impl<'a> From<Segment<'a>> for SegmentBuf {
     fn from(value: Segment<'a>) -> Self {
         value.as_segment_buf()
+    }
+}
+
+#[cfg(test)]
+fn arbitrary_field<G: Gen>(g: &mut G) -> (String, bool) {
+    let chars = (65u8..90).chain(97..122).map(|c| c as char);
+
+    match i32::arbitrary(g) % 2 {
+        0 => {
+            // Doesn't require quoting
+            let chars = chars.collect::<Vec<_>>();
+            let len = u8::arbitrary(g) % 5 + 1;
+            (
+                (0..len)
+                    .map(|_| chars[usize::arbitrary(g) % chars.len()].clone())
+                    .collect::<String>(),
+                false,
+            )
+        }
+        _ => {
+            // Requires quoting (we can include extra characters).
+            let chars = chars.chain(vec!['@', ' ']).collect::<Vec<_>>();
+            let len = u8::arbitrary(g) % 5 + 1;
+            (
+                (0..len)
+                    .map(|_| chars[usize::arbitrary(g) % chars.len()].clone())
+                    .collect::<String>(),
+                true,
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+impl Arbitrary for SegmentBuf {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        match u8::arbitrary(g) % 10 {
+            (0..=7) => {
+                let (name, requires_quoting) = arbitrary_field(g);
+                SegmentBuf::Field {
+                    name,
+                    requires_quoting,
+                }
+            }
+            8 => SegmentBuf::Coalesce({
+                let len = u8::arbitrary(g) % 3 + 2;
+                (0..len)
+                    .map(|_| {
+                        let len = u8::arbitrary(g) % 2 + 1;
+                        (0..len).map(|_| SegmentBuf::arbitrary(g)).collect()
+                    })
+                    .collect()
+            }),
+            _ => {
+                // We'll limit the index to 5, because you can rapidly use up a lot of memory
+                // with lots of higher indexes.
+                SegmentBuf::Index(usize::arbitrary(g) % 5)
+            }
+        }
     }
 }
