@@ -2,7 +2,7 @@ use crate::{event::error::EventError, event::timestamp_to_string, Result};
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use derive_is_enum_variant::is_enum_variant;
-use lookup::{Lookup, LookupBuf, Segment, SegmentBuf};
+use lookup::{Field, FieldBuf, Lookup, LookupBuf, Segment, SegmentBuf};
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
@@ -425,7 +425,7 @@ impl Value {
     }
 
     fn insert_coalesce(
-        sub_segments: Vec<VecDeque<SegmentBuf>>,
+        sub_segments: Vec<FieldBuf>,
         working_lookup: LookupBuf,
         sub_value: &mut Value,
         value: Value,
@@ -433,7 +433,7 @@ impl Value {
         // Creating a needle with a back out of the loop is very important.
         let mut needle = None;
         for sub_segment in sub_segments {
-            let mut lookup = LookupBuf::try_from(sub_segment)?;
+            let mut lookup = LookupBuf::from(sub_segment);
             lookup.extend(working_lookup.clone()); // We need to include the rest of the insert.
                                                    // Notice we cannot take multiple mutable borrows in a loop, so we must pay the
                                                    // contains cost extra. It's super unfortunate, hopefully future work can solve this.
@@ -463,13 +463,15 @@ impl Value {
             Some(SegmentBuf::Index(next_len)) => {
                 Value::Array(Vec::with_capacity(*next_len as usize))
             }
-            Some(SegmentBuf::Field { .. }) => Value::Map(Default::default()),
+            Some(SegmentBuf::Field(FieldBuf { .. })) => Value::Map(Default::default()),
             Some(SegmentBuf::Coalesce(set)) => {
+                Value::Map(Default::default())
+                /*
                 let mut cursor_set = set;
                 loop {
                     match cursor_set.get(0).and_then(|v| v.get(0)) {
                         None => return Err(EventError::EmptyCoalesceSubSegment),
-                        Some(SegmentBuf::Field { .. }) => {
+                        Some(SegmentBuf::Field(FieldBuf { .. })) => {
                             break {
                                 trace!("Preparing inner map.");
                                 Value::Map(Default::default())
@@ -484,6 +486,7 @@ impl Value {
                         Some(SegmentBuf::Coalesce(set)) => cursor_set = &set,
                     }
                 }
+                */
             }
             None => {
                 trace!(field = %name, "Inserted.");
@@ -503,10 +506,10 @@ impl Value {
                     original_value: _,
                 } = &mut e
                 {
-                    let segment = SegmentBuf::Field {
+                    let segment = SegmentBuf::Field(FieldBuf {
                         name: name.to_string(),
                         requires_quoting,
-                    };
+                    });
                     original_target.push_front(segment.clone());
                     primitive_at.push_front(segment);
                 };
@@ -564,10 +567,10 @@ impl Value {
                             });
                             inner
                         }
-                        Some(SegmentBuf::Field {
+                        Some(SegmentBuf::Field(FieldBuf {
                             name,
                             requires_quoting,
-                        }) => {
+                        })) => {
                             let mut inner = Value::Map(Default::default());
                             let name = name.clone(); // This is for navigating an ownership issue in the error stack reporting.
                             let requires_quoting = *requires_quoting; // This is for navigating an ownership issue in the error stack reporting.
@@ -579,10 +582,10 @@ impl Value {
                                     original_value: _,
                                 } = &mut e
                                 {
-                                    let segment = SegmentBuf::Field {
+                                    let segment = SegmentBuf::Field(FieldBuf {
                                         name,
                                         requires_quoting,
-                                    };
+                                    });
                                     original_target.push_front(segment.clone());
                                     primitive_at.push_front(segment);
                                 };
@@ -591,11 +594,34 @@ impl Value {
                             inner
                         }
                         Some(SegmentBuf::Coalesce(set)) => {
+                            match set.get(0) {
+                                None => return Err(EventError::EmptyCoalesceSubSegment),
+                                Some(_) => {
+                                    let mut inner = Value::Map(Default::default());
+                                    trace!("Preparing inner map.");
+                                    let set = SegmentBuf::Coalesce(set.clone());
+                                    retval =
+                                        inner.insert(working_lookup, value).map_err(|mut e| {
+                                            if let EventError::PrimitiveDescent {
+                                                original_target,
+                                                primitive_at,
+                                                original_value: _,
+                                            } = &mut e
+                                            {
+                                                original_target.push_front(set.clone());
+                                                primitive_at.push_front(set.clone());
+                                            };
+                                            e
+                                        });
+                                    inner
+                                }
+                            }
+                            /*
                             let mut cursor_set = set;
                             loop {
                                 match cursor_set.get(0).and_then(|v| v.get(0)) {
                                     None => return Err(EventError::EmptyCoalesceSubSegment),
-                                    Some(SegmentBuf::Field { .. }) => {
+                                    Some(SegmentBuf::Field(FieldBuf { .. })) => {
                                         break {
                                             let mut inner = Value::Map(Default::default());
                                             trace!("Preparing inner map.");
@@ -642,6 +668,7 @@ impl Value {
                                     Some(SegmentBuf::Coalesce(set)) => cursor_set = set,
                                 }
                             }
+                             */
                         }
                         None => value,
                     };
@@ -680,7 +707,7 @@ impl Value {
                 });
                 inner
             }
-            SegmentBuf::Field { .. } => {
+            SegmentBuf::Field(FieldBuf { .. }) => {
                 let mut inner = Value::Map(Default::default());
                 trace!("Preparing inner map.");
                 working_lookup.push_front(segment.clone());
@@ -705,7 +732,7 @@ impl Value {
                 loop {
                     match cursor_set.get(0).and_then(|v| v.get(0)) {
                         None => return Err(EventError::EmptyCoalesceSubSegment),
-                        Some(SegmentBuf::Field { .. }) => {
+                        Some(SegmentBuf::Field(FieldBuf { .. })) => {
                             break {
                                 let mut inner = Value::Map(Default::default());
                                 trace!("Preparing inner map.");
@@ -814,10 +841,10 @@ impl Value {
             }
             // Descend into a map
             (
-                Some(SegmentBuf::Field {
+                Some(SegmentBuf::Field(FieldBuf {
                     ref name,
                     ref requires_quoting,
-                }),
+                })),
                 Value::Map(ref mut map),
             ) => Value::insert_map(name, *requires_quoting, working_lookup, map, value),
             (Some(SegmentBuf::Index(_)), Value::Map(_)) => {
@@ -828,7 +855,7 @@ impl Value {
             (Some(SegmentBuf::Index(i)), Value::Array(ref mut array)) => {
                 Value::insert_array(i, working_lookup, array, value)
             }
-            (Some(SegmentBuf::Field { .. }), Value::Array(_)) => {
+            (Some(SegmentBuf::Field(FieldBuf { .. })), Value::Array(_)) => {
                 trace!("Mismatched field trying to access array.");
                 Ok(None)
             }
@@ -905,7 +932,7 @@ impl Value {
                 // Creating a needle with a back out of the loop is very important.
                 let mut needle = None;
                 for sub_segment in sub_segments {
-                    let mut lookup = Lookup::try_from(sub_segment)?;
+                    let mut lookup = Lookup::from(sub_segment);
                     // Notice we cannot take multiple mutable borrows in a loop, so we must pay the
                     // contains cost extra. It's super unfortunate, hopefully future work can solve this.
                     lookup.extend(working_lookup.clone()); // We need to include the rest of the removal.
@@ -923,7 +950,7 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field { ref name, .. }), Value::Map(map)) => {
+            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
                 if working_lookup.len() == 0 {
                     trace!(field = ?name, "Removing from map.");
                     let retval = Ok(map.remove(*name));
@@ -1055,7 +1082,7 @@ impl Value {
                 // Creating a needle with a back out of the loop is very important.
                 let mut needle = None;
                 for sub_segment in sub_segments {
-                    let mut lookup = Lookup::try_from(sub_segment)?;
+                    let mut lookup = Lookup::from(sub_segment);
                     // Notice we cannot take multiple mutable borrows in a loop, so we must pay the
                     // contains cost extra. It's super unfortunate, hopefully future work can solve this.
                     lookup.extend(working_lookup.clone()); // We need to include the rest of the get.
@@ -1076,7 +1103,7 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field { ref name, .. }), Value::Map(map)) => {
+            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
                 trace!(field = %name, "Descending into map.");
                 match map.get(*name) {
                     Some(inner) => inner.get(working_lookup.clone()),
@@ -1101,7 +1128,7 @@ impl Value {
                     }
                 }
             }
-            (Some(Segment::Field { .. }), Value::Array(_)) => {
+            (Some(Segment::Field(Field { .. })), Value::Array(_)) => {
                 trace!("Mismatched field trying to access array.");
                 Ok(None)
             }
@@ -1162,7 +1189,7 @@ impl Value {
                 // Creating a needle with a back out of the loop is very important.
                 let mut needle = None;
                 for sub_segment in sub_segments {
-                    let mut lookup = Lookup::try_from(sub_segment)?;
+                    let mut lookup = Lookup::from(sub_segment);
                     lookup.extend(working_lookup.clone()); // We need to include the rest of the get.
                                                            // Notice we cannot take multiple mutable borrows in a loop, so we must pay the
                                                            // contains cost extra. It's super unfortunate, hopefully future work can solve this.
@@ -1183,16 +1210,18 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field { ref name, .. }), Value::Map(map)) => match map.get_mut(*name) {
-                Some(inner) => {
-                    trace!(field = %name, "Seeking into map.");
-                    inner.get_mut(working_lookup.clone())
+            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
+                match map.get_mut(*name) {
+                    Some(inner) => {
+                        trace!(field = %name, "Seeking into map.");
+                        inner.get_mut(working_lookup.clone())
+                    }
+                    None => {
+                        trace!(field = %name, "Discovered no value to see into.");
+                        Ok(None)
+                    }
                 }
-                None => {
-                    trace!(field = %name, "Discovered no value to see into.");
-                    Ok(None)
-                }
-            },
+            }
             (Some(Segment::Index(_)), Value::Map(_)) => {
                 trace!("Mismatched index trying to access map.");
                 Ok(None)
@@ -1205,7 +1234,7 @@ impl Value {
                     None => Ok(None),
                 }
             }
-            (Some(Segment::Field { .. }), Value::Array(_)) => {
+            (Some(Segment::Field(_)), Value::Array(_)) => {
                 trace!("Mismatched field trying to access array.");
                 Ok(None)
             }
